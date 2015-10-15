@@ -770,6 +770,7 @@ namespace Dapper
             typeMap[typeof(object)] = DbType.Object;
 #if !DNXCORE50
             AddTypeHandlerImpl(typeof(DataTable), new DataTableHandler(), false);
+            AddTypeHandlerImpl(typeof(IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord>), new SqlDataRecordHandler(), false);
 #endif
         }
 
@@ -781,6 +782,7 @@ namespace Dapper
             typeHandlers = new Dictionary<Type, ITypeHandler>();
 #if !DNXCORE50
             AddTypeHandlerImpl(typeof(DataTable), new DataTableHandler(), true);
+            AddTypeHandlerImpl(typeof(IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord>), new SqlDataRecordHandler(), true);
 #endif
         }
         /// <summary>
@@ -1313,9 +1315,11 @@ this IDbConnection cnn, string sql, object param = null, IDbTransaction transact
 
         private static IEnumerable GetMultiExec(object param)
         {
-            return (param is IEnumerable
-                && !(param is string || param is IEnumerable<KeyValuePair<string, object>>
-                    )) ? (IEnumerable)param : null;
+            return (param is IEnumerable &&
+                    !(param is string ||
+                      param is IEnumerable<KeyValuePair<string, object>> ||
+                      param is IDynamicParameters)
+                ) ? (IEnumerable) param : null;
         }
 
         private static int ExecuteImpl(this IDbConnection cnn, ref CommandDefinition command)
@@ -2790,28 +2794,40 @@ this IDbConnection cnn, string sql, Func<TFirst, TSecond, TThird, TFourth, TRetu
                 var count = 0;
                 bool isString = value is IEnumerable<string>;
                 bool isDbString = value is IEnumerable<DbString>;
-                foreach (var item in list)
+                DbType dbType = 0;
+                if (list != null)
                 {
-                    count++;
-                    var listParam = command.CreateParameter();
-                    listParam.ParameterName = namePrefix + count;
-                    if (isString)
+                    foreach (var item in list)
                     {
-                        listParam.Size = DbString.DefaultLength;
-                        if (item != null && ((string)item).Length > DbString.DefaultLength)
+                        if (count++ == 0)
                         {
-                            listParam.Size = -1;
+                            ITypeHandler handler;
+                            dbType = LookupDbType(item.GetType(), "", true, out handler);
                         }
-                    }
-                    if (isDbString && item as DbString != null)
-                    {
-                        var str = item as DbString;
-                        str.AddParameter(command, listParam.ParameterName);
-                    }
-                    else
-                    {
-                        listParam.Value = SanitizeParameterValue(item);
-                        command.Parameters.Add(listParam);
+                        var listParam = command.CreateParameter();
+                        listParam.ParameterName = namePrefix + count;
+                        if (isString)
+                        {
+                            listParam.Size = DbString.DefaultLength;
+                            if (item != null && ((string) item).Length > DbString.DefaultLength)
+                            {
+                                listParam.Size = -1;
+                            }
+                        }
+                        if (isDbString && item as DbString != null)
+                        {
+                            var str = item as DbString;
+                            str.AddParameter(command, listParam.ParameterName);
+                        }
+                        else
+                        {
+                            listParam.Value = SanitizeParameterValue(item);
+                            if (listParam.DbType != dbType)
+                            {
+                                listParam.DbType = dbType;
+                            }
+                            command.Parameters.Add(listParam);
+                        }
                     }
                 }
 
@@ -3588,6 +3604,12 @@ this IDbConnection cnn, string sql, Func<TFirst, TSecond, TThird, TFourth, TRetu
         /// <summary>
         /// Gets type-map for the given type
         /// </summary>
+        /// <returns>Type map instance, default is to create new instance of DefaultTypeMap</returns>
+        public static Func<Type, ITypeMap> TypeMapProvider = ( Type type ) => new DefaultTypeMap( type );
+
+        /// <summary>
+        /// Gets type-map for the given type
+        /// </summary>
         /// <returns>Type map implementation, DefaultTypeMap instance if no override present</returns>
         public static ITypeMap GetTypeMap(Type type)
         {
@@ -3610,7 +3632,7 @@ this IDbConnection cnn, string sql, Func<TFirst, TSecond, TThird, TFourth, TRetu
 
                         if (map == null)
                     {
-                        map = new DefaultTypeMap(type);
+                        map = TypeMapProvider( type );
                         _typeMaps[type] = map;
                     }
                 }
@@ -4335,6 +4357,22 @@ Type type, IDataReader reader, int startBound = 0, int length = -1, bool returnN
                 }
             }
 
+            private IEnumerable<TReturn> MultiReadInternal<TReturn>(Type[] types, Func<object[], TReturn> map, string splitOn)
+            {
+                var identity = this.identity.ForGrid(typeof(TReturn), types, gridIndex);
+                try
+                {
+                    foreach (var r in SqlMapper.MultiMapImpl<TReturn>(null, default(CommandDefinition), types, map, splitOn, reader, identity, false))
+                    {
+                        yield return r;
+                    }
+                }
+                finally
+                {
+                    NextResult();
+                }
+            }
+
 #if CSHARP30
             /// <summary>
             /// Read multiple objects from a single record set on the grid
@@ -4429,6 +4467,16 @@ Type type, IDataReader reader, int startBound = 0, int length = -1, bool returnN
                 var result = MultiReadInternal<TFirst, TSecond, TThird, TFourth, TFifth, TSixth, TSeventh, TReturn>(func, splitOn);
                 return buffered ? result.ToList() : result;
             }
+
+            /// <summary>
+            /// Read multiple objects from a single record set on the grid
+            /// </summary>
+            public IEnumerable<TReturn> Read<TReturn>(Type[] types, Func<object [], TReturn> map, string splitOn = "id", bool buffered = true)
+            {
+                var result = MultiReadInternal<TReturn>(types, map, splitOn);
+                return buffered ? result.ToList() : result;
+            }
+
 #endif
 
             private IEnumerable<T> ReadDeferred<T>(int index, Func<IDataReader, object> deserializer, Identity typedIdentity)
@@ -4534,6 +4582,19 @@ Type type, IDataReader reader, int startBound = 0, int length = -1, bool returnN
         {
             return table == null ? null : table.ExtendedProperties[DataTableTypeNameKey] as string;
         }
+
+        /// <summary>
+        /// Used to pass a IEnumerable&lt;SqlDataRecord&gt; as a TableValuedParameter
+        /// </summary>
+        public static ICustomQueryParameter AsTableValuedParameter(this IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord> list, string typeName
+#if !CSHARP30
+            = null
+#endif
+            )
+        {
+            return new SqlDataRecordListTVPParameter(list, typeName);
+        }
+
 #endif
 
         // one per thread
@@ -4792,15 +4853,15 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
 
                 SqlMapper.ITypeHandler handler = null;
                 if (dbType == null && val != null && !isCustomQueryParameter) dbType = SqlMapper.LookupDbType(val.GetType(), name, true, out handler);
-                if (dbType == DynamicParameters.EnumerableMultiParameter)
+                if (isCustomQueryParameter)
+                {
+                    ((SqlMapper.ICustomQueryParameter)val).AddParameter(command, name);
+                }
+                else if (dbType == DynamicParameters.EnumerableMultiParameter)
                 {
 #pragma warning disable 612, 618
                     SqlMapper.PackListParameters(command, name, val);
 #pragma warning restore 612, 618
-                }
-                else if (isCustomQueryParameter)
-                {
-                    ((SqlMapper.ICustomQueryParameter)val).AddParameter(command, name);
                 }
                 else
                 {
@@ -5097,6 +5158,63 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
         }
     }
 
+    sealed class SqlDataRecordHandler : Dapper.SqlMapper.ITypeHandler
+    {
+        public object Parse(Type destinationType, object value)
+        {
+            throw new NotImplementedException();
+        }
+
+        public void SetValue(IDbDataParameter parameter, object value)
+        {
+            SqlDataRecordListTVPParameter.Set(parameter, value as IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord>, null);
+        }
+    }
+
+    /// <summary>
+    /// Used to pass a IEnumerable&lt;SqlDataRecord&gt; as a SqlDataRecordListTVPParameter
+    /// </summary>
+    sealed partial class SqlDataRecordListTVPParameter : Dapper.SqlMapper.ICustomQueryParameter
+    {
+        private readonly IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord> data;
+        private readonly string typeName;
+        /// <summary>
+        /// Create a new instance of SqlDataRecordListTVPParameter
+        /// </summary>
+        public SqlDataRecordListTVPParameter(IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord> data, string typeName)
+        {
+            this.data = data;
+            this.typeName = typeName;
+        }
+        static readonly Action<System.Data.SqlClient.SqlParameter, string> setTypeName;
+        static SqlDataRecordListTVPParameter()
+        {
+            var prop = typeof(System.Data.SqlClient.SqlParameter).GetProperty("TypeName", BindingFlags.Instance | BindingFlags.Public);
+            if(prop != null && prop.PropertyType == typeof(string) && prop.CanWrite)
+            {
+                setTypeName = (Action<System.Data.SqlClient.SqlParameter, string>)
+                    Delegate.CreateDelegate(typeof(Action<System.Data.SqlClient.SqlParameter, string>), prop.GetSetMethod());
+            }
+        }
+        void SqlMapper.ICustomQueryParameter.AddParameter(IDbCommand command, string name)
+        {
+            var param = command.CreateParameter();
+            param.ParameterName = name;
+            Set(param, data, typeName);
+            command.Parameters.Add(param);
+        }
+        internal static void Set(IDbDataParameter parameter, IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord> data, string typeName)
+        {
+            parameter.Value = (object)data ?? DBNull.Value;
+            var sqlParam = parameter as System.Data.SqlClient.SqlParameter;
+            if (sqlParam != null)
+            {
+                sqlParam.SqlDbType = SqlDbType.Structured;
+                sqlParam.TypeName = typeName;
+            }
+        }
+    }
+
     /// <summary>
     /// Used to pass a DataTable as a TableValuedParameter
     /// </summary>
@@ -5159,6 +5277,11 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
     sealed partial class DbString : Dapper.SqlMapper.ICustomQueryParameter
     {
         /// <summary>
+        /// Default value for IsAnsi.
+        /// </summary>
+        public static bool IsAnsiDefault { get; set; }
+
+        /// <summary>
         /// A value to set the default value of strings
         /// going through Dapper. Default is 4000, any value larger than this
         /// field will not have the default value applied.
@@ -5168,7 +5291,10 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
         /// <summary>
         /// Create a new DbString
         /// </summary>
-        public DbString() { Length = -1; }
+        public DbString() {
+            Length = -1;
+            IsAnsi = IsAnsiDefault;
+        }
         /// <summary>
         /// Ansi vs Unicode 
         /// </summary>
