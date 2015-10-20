@@ -5,8 +5,11 @@ using System.Data;
 using System.Data.SQLite;
 #elif MSSQL
 using System.Data.SqlClient;
-#endif
+#elif MYSQL
+using MySql.Data;
+#else
 using System.Data.SqlServerCe;
+#endif
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -90,6 +93,8 @@ namespace Dapper.Contrib.Tests
             var connection = new SQLiteConnection("Data Source = " + projFolder + "\\Test.sqlite;");
 #elif MSSQL
             var connection = new SqlConnection("Data Source = .\\SQLEXPRESS;Initial Catalog=DapperContribMsSqlTests;Integrated Security=SSPI");
+#elif MYSQL
+            var connection = new MySql.Data.MySqlClient.MySqlConnection("server=127.0.0.1;uid=crunchbang;Database=Test;");
 #else
             var connection = new SqlCeConnection("Data Source = " + projFolder + "\\Test.sdf;");
 #endif
@@ -106,6 +111,8 @@ namespace Dapper.Contrib.Tests
             var connection = new SQLiteConnection("Data Source = " + projFolder + "\\Test.sqlite;");
 #elif MSSQL
             var connection = new SqlConnection("Data Source = .\\SQLEXPRESS;Initial Catalog=DapperContribMsSqlTests;Integrated Security=SSPI");
+#elif MYSQL
+            var connection = new MySql.Data.MySqlClient.MySqlConnection("server=127.0.0.1;uid=crunchbang;Database=Test;");
 #else
             var connection = new SqlCeConnection("Data Source = " + projFolder + "\\Test.sdf;");
 #endif
@@ -120,11 +127,10 @@ namespace Dapper.Contrib.Tests
 
             using (var connection = GetOpenConnection())
             {
-
                 var guid = Guid.NewGuid().ToString();
                 var o1 = new ObjectX { ObjectXId = guid, Name = "Foo" };
                 connection.Insert(o1);
-                var list1 = connection.Query<ObjectX>("select * from objectx").ToList();
+                var list1 = connection.Query<ObjectX>("select * from ObjectX").ToList();
                 list1.Count.IsEqualTo(1);
                 o1 = connection.Get<ObjectX>(guid);
                 o1.ObjectXId.IsEqualTo(guid);
@@ -139,7 +145,7 @@ namespace Dapper.Contrib.Tests
                 const int id = 42;
                 var o2 = new ObjectY() { ObjectYId = id, Name = "Foo" };
                 connection.Insert(o2);
-                var list2 = connection.Query<ObjectY>("select * from objecty").ToList();
+                var list2 = connection.Query<ObjectY>("select * from ObjectY").ToList();
                 list2.Count.IsEqualTo(1);
                 o2 = connection.Get<ObjectY>(id);
                 o2.ObjectYId.IsEqualTo(id);
@@ -170,7 +176,7 @@ namespace Dapper.Contrib.Tests
             {
                 connection.Insert(new Stuff() { Name = "First item" });
                 connection.Insert(new Stuff() { Name = "Second item", Created = DateTime.Now });
-                var stuff = connection.Query<Stuff>("select * from stuff").ToList();
+                var stuff = connection.Query<Stuff>("select * from Stuff").ToList();
                 stuff.First().Created.IsNull();
                 stuff.Last().Created.IsNotNull();
 
@@ -227,7 +233,7 @@ namespace Dapper.Contrib.Tests
 
                 var total = connection.Insert(users);
                 total.IsEqualTo(numberOfEntities);
-                users = connection.Query<User>("select * from users").ToList();
+                users = connection.Query<User>("select * from Users").ToList();
                 users.Count.IsEqualTo(numberOfEntities);
             }
 
@@ -247,14 +253,14 @@ namespace Dapper.Contrib.Tests
 
                 var total = connection.Insert(users);
                 total.IsEqualTo(numberOfEntities);
-                users = connection.Query<User>("select * from users").ToList();
+                users = connection.Query<User>("select * from Users").ToList();
                 users.Count.IsEqualTo(numberOfEntities);
                 foreach (var user in users)
                 {
                     user.Name = user.Name + " updated";
                 }
                 connection.Update(users);
-                var name = connection.Query<User>("select * from users").First().Name;
+                var name = connection.Query<User>("select * from Users").First().Name;
                 name.Contains("updated").IsTrue();
             }
 
@@ -274,12 +280,12 @@ namespace Dapper.Contrib.Tests
 
                 var total = connection.Insert(users);
                 total.IsEqualTo(numberOfEntities);
-                users = connection.Query<User>("select * from users").ToList();
+                users = connection.Query<User>("select * from Users").ToList();
                 users.Count.IsEqualTo(numberOfEntities);
 
                 var usersToDelete = users.Take(10).ToList();
                 connection.Delete(usersToDelete);
-                users = connection.Query<User>("select * from users").ToList();
+                users = connection.Query<User>("select * from Users").ToList();
                 users.Count.IsEqualTo(numberOfEntities - 10);
             }
 
@@ -338,10 +344,17 @@ namespace Dapper.Contrib.Tests
                 {
                     var id = connection.Insert(new User { Name = "Adam", Age = 10 });
                 }
+				#if SQL_SERVER_CE
                 catch (SqlCeException ex)
                 {
                     sqliteCodeCalled = ex.Message.IndexOf("There was an error parsing the query", StringComparison.InvariantCultureIgnoreCase) >= 0;
                 }
+				#elif MYSQL
+                catch (MySql.Data.MySqlClient.MySqlException ex)
+                {
+                    sqliteCodeCalled = ex.Message.IndexOf("You have an error in your SQL syntax", StringComparison.InvariantCultureIgnoreCase) >= 0;
+                }
+				#endif
 // ReSharper disable once EmptyGeneralCatchClause
                 catch (Exception)
                 {

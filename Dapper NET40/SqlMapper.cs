@@ -770,7 +770,9 @@ namespace Dapper
             typeMap[typeof(object)] = DbType.Object;
 #if !DNXCORE50
             AddTypeHandlerImpl(typeof(DataTable), new DataTableHandler(), false);
+      #if MSSQL
             AddTypeHandlerImpl(typeof(IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord>), new SqlDataRecordHandler(), false);
+      #endif //#if MSSQL
 #endif
         }
 
@@ -782,7 +784,9 @@ namespace Dapper
             typeHandlers = new Dictionary<Type, ITypeHandler>();
 #if !DNXCORE50
             AddTypeHandlerImpl(typeof(DataTable), new DataTableHandler(), true);
+      #if MSSQL
             AddTypeHandlerImpl(typeof(IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord>), new SqlDataRecordHandler(), true);
+      #endif //#if MSSQL
 #endif
         }
         /// <summary>
@@ -4583,6 +4587,7 @@ Type type, IDataReader reader, int startBound = 0, int length = -1, bool returnN
             return table == null ? null : table.ExtendedProperties[DataTableTypeNameKey] as string;
         }
 
+#if MSSQL
         /// <summary>
         /// Used to pass a IEnumerable&lt;SqlDataRecord&gt; as a TableValuedParameter
         /// </summary>
@@ -4594,7 +4599,7 @@ Type type, IDataReader reader, int startBound = 0, int length = -1, bool returnN
         {
             return new SqlDataRecordListTVPParameter(list, typeName);
         }
-
+#endif //#ifdef MSSQL
 #endif
 
         // one per thread
@@ -5157,7 +5162,7 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
             TableValuedParameter.Set(parameter, value as DataTable, null);
         }
     }
-
+    #if MSSQL
     sealed class SqlDataRecordHandler : Dapper.SqlMapper.ITypeHandler
     {
         public object Parse(Type destinationType, object value)
@@ -5170,7 +5175,8 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
             SqlDataRecordListTVPParameter.Set(parameter, value as IEnumerable<Microsoft.SqlServer.Server.SqlDataRecord>, null);
         }
     }
-
+    #endif //#if MSSQL
+    #if MSSQL
     /// <summary>
     /// Used to pass a IEnumerable&lt;SqlDataRecord&gt; as a SqlDataRecordListTVPParameter
     /// </summary>
@@ -5214,7 +5220,7 @@ string name, object value = null, DbType? dbType = null, ParameterDirection? dir
             }
         }
     }
-
+    #endif //#if MSSQL
     /// <summary>
     /// Used to pass a DataTable as a TableValuedParameter
     /// </summary>

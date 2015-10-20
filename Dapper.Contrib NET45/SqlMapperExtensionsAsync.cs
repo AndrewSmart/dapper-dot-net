@@ -152,7 +152,7 @@ namespace Dapper.Contrib.Extensions
             for (var i = 0; i < allPropertiesExceptKeyAndComputed.Count(); i++)
             {
                 var property = allPropertiesExceptKeyAndComputed.ElementAt(i);
-                sbColumnList.AppendFormat("[{0}]", property.Name);
+                sbColumnList.AppendFormat("`{0}`", property.Name);
                 if (i < allPropertiesExceptKeyAndComputed.Count() - 1)
                     sbColumnList.Append(", ");
             }
@@ -341,12 +341,10 @@ public partial class MySqlAdapter : ISqlAdapter
     public async Task<int> InsertAsync(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, string tableName,
         string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
     {
-        var cmd = String.Format("insert into {0} ({1}) values ({2})", tableName, columnList, parameterList);
-        await connection.ExecuteAsync(cmd, entityToInsert, transaction, commandTimeout).ConfigureAwait(false);
-        var r = await connection.QueryAsync<dynamic>("select LAST_INSERT_ID()", transaction: transaction, commandTimeout: commandTimeout).ConfigureAwait(false);
+        var cmd = String.Format("insert into {0} ({1}) values ({2}); select last_insert_id() id", tableName, columnList, parameterList);
+        var multi = await connection.QueryMultipleAsync(cmd, entityToInsert, transaction, commandTimeout);
 
-        var id = r.First().id;
-        if (id == null) return 0;
+        var id = (int)multi.Read().First().id;
         var pi = keyProperties as PropertyInfo[] ?? keyProperties.ToArray();
         if (!pi.Any()) return id;
 

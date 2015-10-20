@@ -731,12 +731,10 @@ public partial class MySqlAdapter : ISqlAdapter
 {
     public int Insert(IDbConnection connection, IDbTransaction transaction, int? commandTimeout, String tableName, string columnList, string parameterList, IEnumerable<PropertyInfo> keyProperties, object entityToInsert)
     {
-        var cmd = String.Format("insert into {0} ({1}) values ({2})", tableName, columnList, parameterList);
-        connection.Execute(cmd, entityToInsert, transaction, commandTimeout);
-        var r = connection.Query("Select LAST_INSERT_ID()", transaction: transaction, commandTimeout: commandTimeout);
+        var cmd = String.Format("insert into {0} ({1}) values ({2}); select last_insert_id() id", tableName, columnList, parameterList);
+        var r = connection.QueryMultiple(cmd, entityToInsert, transaction, commandTimeout);
 
-        var id = r.First().id;
-        if (id == null) return 0;
+        var id = (int)r.Read().First().id;
         var propertyInfos = keyProperties as PropertyInfo[] ?? keyProperties.ToArray();
         if (!propertyInfos.Any()) return id;
 
